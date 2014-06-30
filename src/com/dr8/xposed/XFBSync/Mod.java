@@ -1,12 +1,13 @@
 package com.dr8.xposed.XFBSync;
 
 import static de.robv.android.xposed.XposedHelpers.findAndHookMethod;
-import static de.robv.android.xposed.XposedHelpers.getObjectField;
+import static de.robv.android.xposed.XposedHelpers.callMethod;
 
 import java.io.File;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
+import java.util.HashMap;
 import java.util.Map;
 import de.robv.android.xposed.IXposedHookInitPackageResources;
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -14,13 +15,12 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_InitPackageResources.InitPackageResourcesParam;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
+import de.robv.android.xposed.callbacks.XCallback;
 import android.annotation.SuppressLint;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteStatement;
-import android.provider.ContactsContract;
 
 @SuppressLint("SdCardPath")
 public class Mod implements IXposedHookLoadPackage, IXposedHookInitPackageResources {
@@ -28,7 +28,6 @@ public class Mod implements IXposedHookLoadPackage, IXposedHookInitPackageResour
 	private static String contactspkg = "com.android.providers.contacts";
 	private static final String TAG = "XFBS";
 	private static boolean DEBUG = true;
-	private static String fbid = "";
 	private static String bigurl = "";
 
 	private static void log(String msg) {
@@ -115,49 +114,53 @@ public class Mod implements IXposedHookLoadPackage, IXposedHookInitPackageResour
 					mparam.setResult(true);
 				}
 			});
-			findAndHookMethod("com.facebook.contactsync.ProfileImageSyncHelper", lpparam.classLoader, "a", Long.class, Map.class, new XC_MethodHook() {
+			findAndHookMethod("com.facebook.contactsync.ProfileImageSyncHelper", lpparam.classLoader, "a", Long.class, Map.class, new XC_MethodHook(XCallback.PRIORITY_HIGHEST) {
 				@Override
 				protected void beforeHookedMethod(MethodHookParam mparam) throws Throwable {
 					if (DEBUG) log("reading profile map...");
-					Context ctx = (Context) getObjectField(mparam.thisObject, "b");
 					@SuppressWarnings("unchecked")
 					Map<String, String> localmap = (Map<String, String>) mparam.args[1];
-					String hash = localmap.get("sync_hash");
-					String[] projection = new String[1];
-					String[] args = new String[1];
-					args[0] = hash;
-					projection[0] = ContactsContract.RawContacts.SOURCE_ID;
-					String oldurl = localmap.get("profile_pic_url");
-					Cursor cursor = ctx.getContentResolver().query(ContactsContract.RawContacts.CONTENT_URI, projection, "sync1=?", args, null);
-					if (cursor.getCount() == 1) {
-						cursor.moveToFirst();
-						fbid = cursor.getString(cursor.getColumnIndex(ContactsContract.RawContacts.SOURCE_ID));
-						cursor.close();
+					if (localmap.containsKey("mymap")) {
+						if (DEBUG) log("already modified the map, sending onward");
+						return;
 					} else {
-						if (DEBUG) log("no sync1 hash match");
-					}
-
-					SQLiteDatabase fbdb = SQLiteDatabase.openDatabase("/data/data/com.facebook.katana/databases/contacts_db2", null, 0);
-					if (fbdb.isOpen() && !fbdb.isDbLockedByCurrentThread()) {
-						if (DEBUG) log("fbdb is open and not locked, querying table");
-						Cursor cursor2 = fbdb.rawQuery("SELECT big_picture_url FROM contacts WHERE fbid = '" + fbid + "'", null);
-						if (cursor2.getCount() == 1) {
-							cursor2.moveToFirst();
-							bigurl = cursor2.getString(cursor2.getColumnIndex("big_picture_url"));
-							cursor2.close();
-							fbdb.close();
-							if (DEBUG) log("replacing old url: " + oldurl + " with new url: " + bigurl);
-							localmap.put("profile_pic_url", bigurl);
+						Long locallong = (Long) mparam.args[0];
+						Map<String, String> newmap = new HashMap<String, String>();
+						newmap.put("sync_hash", localmap.get("sync_hash"));
+						if (DEBUG) log("local long is: " + locallong);
+						String oldurl = localmap.get("profile_pic_url");
+						SQLiteDatabase fbdb = SQLiteDatabase.openDatabase("/data/data/com.facebook.katana/databases/contacts_db2", null, 0);
+						if (fbdb.isOpen() && !fbdb.isDbLockedByCurrentThread()) {
+							if (DEBUG) log("fbdb is open and not locked, querying table");
+							Cursor cursor2 = fbdb.rawQuery("SELECT huge_picture_url FROM contacts WHERE fbid = '" + locallong + "'", null);
+							if (cursor2.getCount() == 1) {
+								cursor2.moveToFirst();
+								bigurl = cursor2.getString(cursor2.getColumnIndex("huge_picture_url"));
+								cursor2.close();
+								fbdb.close();
+								if (DEBUG) log("replacing old url: " + oldurl + " with new url: " + bigurl);
+								newmap.put("profile_pic_url", bigurl);
+								newmap.put("mymap", "1");
+								mparam.setResult(false);
+								callMethod(mparam.thisObject, "a", locallong, newmap);
+								return;
+							} else {
+								if (DEBUG) log("no fbid match");
+								cursor2.close();
+								fbdb.close();
+							}
 						} else {
-							if (DEBUG) log("no fbid match");
+							if (DEBUG) log("fb contacts db not opened or busy");
 						}
 					}
-					
-					//					for (Entry<String, String> entry : localmap.entrySet()) {
-					//					    String key = entry.getKey();
-					//					    String value = entry.getValue();
-					//						if (DEBUG) log("our key is: " + key + " and value is: " + value);
-					//					}
+				} 
+				@Override
+				protected void afterHookedMethod(MethodHookParam mparam) throws Throwable {
+					@SuppressWarnings("unchecked")
+					Map<String, String> immutemap = (Map<String, String>) mparam.args[1];
+					String afterurl = immutemap.get("profile_pic_url");
+					Long afterlong = (Long) mparam.args[0];
+					if (DEBUG) log("our after id is: " + afterlong + " and url is: " + afterurl);
 				}
 			});
 		} else {
